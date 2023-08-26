@@ -4,9 +4,12 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Sequence
+from dataclasses import dataclass
 from functools import partial
+from pathlib import Path
 import multiprocessing
 from io import BytesIO
+from typing import List
 
 import numpy as np
 import torch
@@ -25,6 +28,12 @@ from shift_dev.utils.load import im_decode, ply_decode
 from .base import Scalabel
 
 logger = setup_logger()
+
+
+@dataclass
+class LoadForModel:
+    SEGFORMER = "segformer"
+    ORIGINAL = "original"
 
 
 def _get_extension(backend: DataBackend):
@@ -245,6 +254,7 @@ class SHIFTDataset(Dataset):
         split: str,
         keys_to_load: Sequence[str] = (Keys.images, Keys.boxes2d),
         views_to_load: Sequence[str] = ("front",),
+        load_for_model: LoadForModel = LoadForModel.SEGFORMER,
         framerate: str = "images",
         shift_type: str = "discrete",
         backend: DataBackend = HDF5Backend(),
@@ -261,6 +271,9 @@ class SHIFTDataset(Dataset):
         )
         self.validate_keys(keys_to_load)
 
+        if "center" in keys_to_load and load_for_model == LoadForModel.SEGFORMER:
+            raise ValueError("'center' view (lidar) is not supported for Segformer training.")
+
         # Set attributes
         self.data_root = data_root
         self.split = split
@@ -270,6 +283,7 @@ class SHIFTDataset(Dataset):
         self.shift_type = shift_type
         self.backend = backend
         self.verbose = verbose
+        self.load_for_model = load_for_model
         self.ext = _get_extension(backend)
         if self.shift_type.startswith("continuous"):
             shift_speed = self.shift_type.split("/")[-1]
@@ -283,54 +297,73 @@ class SHIFTDataset(Dataset):
         if self.verbose:
             logger.info(f"Base: {self.annotation_base}. Backend: {self.backend}")
 
-        # Get the data groups' classes that need to be loaded
-        self._data_groups_to_load = self._get_data_groups(keys_to_load)
-        if "det_2d" not in self._data_groups_to_load:
-            raise ValueError(
-                "In current implementation, the 'det_2d' data group must be"
-                "loaded to load any other data group."
-            )
+        if self.load_for_model == LoadForModel.SEGFORMER:
+            import transformers
+            self.image_processor = transformers.SegformerImageProcessor()
+            self.image_paths: List[Path] = self.get_file_paths(type="img")
 
-        self.scalabel_datasets = {}
-        for view in self.views_to_load:
-            if view == "center":
-                # Load lidar data, only available for center view
-                self.scalabel_datasets["center/lidar"] = _SHIFTScalabelLabels(
-                    data_root=self.data_root,
-                    split=self.split,
-                    data_file="lidar",
-                    annotation_file="det_3d.json",
-                    view=view,
-                    framerate=self.framerate,
-                    shift_type=self.shift_type,
-                    keys_to_load=(Keys.points3d, *self.DATA_GROUPS["det_3d"]),
-                    backend=backend,
-                    num_workers=num_workers,
-                    verbose=verbose,
+        elif self.load_for_model == LoadForModel.ORIGINAL:
+            # Get the data groups' classes that need to be loaded
+            self._data_groups_to_load = self._get_data_groups(keys_to_load)
+            if "det_2d" not in self._data_groups_to_load:
+                raise ValueError(
+                    "In current implementation, the 'det_2d' data group must be"
+                    "loaded to load any other data group."
                 )
-            else:
-                # Skip the lidar data group, which is loaded separately
-                image_loaded = False
-                for group in self._data_groups_to_load:
-                    name = f"{view}/{group}"
-                    keys_to_load = list(self.DATA_GROUPS[group])
-                    # Load the image data group only once
-                    if not image_loaded:
-                        keys_to_load.extend(self.DATA_GROUPS["img"])
-                        image_loaded = True
-                    self.scalabel_datasets[name] = _SHIFTScalabelLabels(
+
+            self.scalabel_datasets = {}
+            for view in self.views_to_load:
+                if view == "center":
+                    # Load lidar data, only available for center view
+                    self.scalabel_datasets["center/lidar"] = _SHIFTScalabelLabels(
                         data_root=self.data_root,
                         split=self.split,
-                        data_file="img",
-                        annotation_file=f"{group}.json",
+                        data_file="lidar",
+                        annotation_file="det_3d.json",
                         view=view,
                         framerate=self.framerate,
                         shift_type=self.shift_type,
-                        keys_to_load=keys_to_load,
+                        keys_to_load=(Keys.points3d, *self.DATA_GROUPS["det_3d"]),
                         backend=backend,
                         num_workers=num_workers,
                         verbose=verbose,
                     )
+                else:
+                    # Skip the lidar data group, which is loaded separately
+                    image_loaded = False
+                    for group in self._data_groups_to_load:
+                        name = f"{view}/{group}"
+                        keys_to_load = list(self.DATA_GROUPS[group])
+                        # Load the image data group only once
+                        if not image_loaded:
+                            keys_to_load.extend(self.DATA_GROUPS["img"])
+                            image_loaded = True
+                        self.scalabel_datasets[name] = _SHIFTScalabelLabels(
+                            data_root=self.data_root,
+                            split=self.split,
+                            data_file="img",
+                            annotation_file=f"{group}.json",
+                            view=view,
+                            framerate=self.framerate,
+                            shift_type=self.shift_type,
+                            keys_to_load=keys_to_load,
+                            backend=backend,
+                            num_workers=num_workers,
+                            verbose=verbose,
+                        )
+
+    def get_file_paths(self, type: str) -> List[str]:
+        """Return paths to all files in split for sampling"""
+        assert type in ("img", "semseg"), "File type not supported."
+        ext = ".jpg" if type == "img" else ".png"
+        file_paths = []
+        for view in self.views_to_load:
+            key_dir = Path(self.annotation_base) / view / type
+            for scene_folder in key_dir.iterdir():
+                for file_path in scene_folder.glob(f"*{ext}"):
+                    file_paths.append(str(file_path))
+
+        return file_paths
 
     def validate_keys(self, keys_to_load: Sequence[str]) -> None:
         """Validate that all keys to load are supported."""
@@ -367,6 +400,12 @@ class SHIFTDataset(Dataset):
         if data_group == "flow":
             return self._load_flow(filepath)
         raise ValueError(f"Invalid data group '{data_group}'")
+
+    def _load_image(self, filepath: str) -> Tensor:
+        """Load semantic segmentation data."""
+        im_bytes = self.backend.get(filepath)
+        image = im_decode(im_bytes, mode="RGB")
+        return image  # torch.as_tensor(image, dtype=torch.int64)
 
     def _load_semseg(self, filepath: str) -> Tensor:
         """Load semantic segmentation data."""
@@ -419,9 +458,12 @@ class SHIFTDataset(Dataset):
 
     def __len__(self) -> int:
         """Get the number of samples in the dataset."""
-        if len(self.scalabel_datasets) > 0:
-            return len(self.scalabel_datasets[list(self.scalabel_datasets.keys())[0]])
-        raise ValueError("No Scalabel file has been loaded.")
+        if self.load_for_model == LoadForModel.SEGFORMER:
+            return len(self.image_paths)
+        elif self.load_for_model == LoadForModel.ORIGINAL:
+            if len(self.scalabel_datasets) > 0:
+                return len(self.scalabel_datasets[list(self.scalabel_datasets.keys())[0]])
+            raise ValueError("No Scalabel file has been loaded.")
 
     def __getitem__(self, idx: int) -> DataDict:
         """Get single sample.
@@ -434,36 +476,46 @@ class SHIFTDataset(Dataset):
         """
         # load camera frames
         data_dict = {}
-        for view in self.views_to_load:
-            data_dict_view = {}
+
+        if self.load_for_model == LoadForModel.SEGFORMER:
+            image_path = self.image_paths[idx]
+            image = self._load_image(image_path)
+            semseg_path = image_path.replace("img", "semseg").replace(".jpg", ".png")
+            semseg_mask = self._load_semseg(semseg_path)
+            processed = self.image_processor(images=image, segmentation_maps=semseg_mask)
+            data_dict["pixel_values"] = processed.data["pixel_values"][0]
+            data_dict["labels"] = processed.data["labels"][0]
+
+        elif self.load_for_model == ORIGINAL:
             video_name, frame_name = self._get_frame_key(idx)
+            for view in self.views_to_load:
+                data_dict_view = {}
+                if view == "center":
+                    # Lidar is only available in the center view
+                    if Keys.points3d in self.keys_to_load:
+                        data_dict_view.update(self.scalabel_datasets["center/lidar"][idx])
+                else:
+                    # Load data from Scalabel
+                    for group in self._data_groups_to_load:
+                        data_dict_view.update(
+                            self.scalabel_datasets[f"{view}/{group}"][idx]
+                        )
 
-            if view == "center":
-                # Lidar is only available in the center view
-                if Keys.points3d in self.keys_to_load:
-                    data_dict_view.update(self.scalabel_datasets["center/lidar"][idx])
-            else:
-                # Load data from Scalabel
-                for group in self._data_groups_to_load:
-                    data_dict_view.update(
-                        self.scalabel_datasets[f"{view}/{group}"][idx]
-                    )
+                    # Load data from bit masks
+                    if Keys.segmentation_masks in self.keys_to_load:
+                        data_dict_view[Keys.segmentation_masks] = self._load(
+                            view, "semseg", "png", video_name, frame_name
+                        )
+                    if Keys.depth_maps in self.keys_to_load:
+                        data_dict_view[Keys.depth_maps] = self._load(
+                            view, "depth", "png", video_name, frame_name
+                        )
+                    if Keys.optical_flows in self.keys_to_load:
+                        data_dict_view[Keys.optical_flows] = self._load(
+                            view, "flow", "npz", video_name, frame_name
+                        )
 
-                # Load data from bit masks
-                if Keys.segmentation_masks in self.keys_to_load:
-                    data_dict_view[Keys.segmentation_masks] = self._load(
-                        view, "semseg", "png", video_name, frame_name
-                    )
-                if Keys.depth_maps in self.keys_to_load:
-                    data_dict_view[Keys.depth_maps] = self._load(
-                        view, "depth", "png", video_name, frame_name
-                    )
-                if Keys.optical_flows in self.keys_to_load:
-                    data_dict_view[Keys.optical_flows] = self._load(
-                        view, "flow", "npz", video_name, frame_name
-                    )
-            
-            data_dict[view] = data_dict_view
+                data_dict[view] = data_dict_view
 
         return data_dict
 
