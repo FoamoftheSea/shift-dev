@@ -19,6 +19,7 @@ from scalabel.label.typing import Config
 from scalabel.label.typing import Dataset as ScalabelData
 from torch import Tensor
 from torch.utils.data import Dataset
+from torchvision.transforms import v2
 
 from shift_dev.types import DataDict, Keys
 from shift_dev.utils import setup_logger
@@ -260,6 +261,10 @@ class SHIFTDataset(Dataset):
         backend: DataBackend = HDF5Backend(),
         num_workers: int = 1,
         verbose: bool = False,
+        image_transforms: Optional[List[v2.Transform]] = None,
+        frame_transforms: Optional[List[v2.Transform]] = None,
+        image_processor: Optional = None,
+        eval_full_res: bool = False,
     ) -> None:
         """Initialize SHIFT dataset."""
         # Validate input
@@ -283,6 +288,8 @@ class SHIFTDataset(Dataset):
         self.shift_type = shift_type
         self.backend = backend
         self.verbose = verbose
+        self.image_transforms = image_transforms if image_transforms is None else v2.Compose(image_transforms)
+        self.frame_transforms = frame_transforms if frame_transforms is None else v2.Compose(frame_transforms)
         self.load_for_model = load_for_model
         self.ext = _get_extension(backend)
         if self.shift_type.startswith("continuous"):
@@ -299,7 +306,9 @@ class SHIFTDataset(Dataset):
 
         if self.load_for_model == LoadForModel.SEGFORMER:
             import transformers
-            self.image_processor = transformers.SegformerImageProcessor()
+            self.image_processor = transformers.SegformerImageProcessor() if image_processor is None else image_processor
+            if self.split == "val" and eval_full_res:
+                self.image_processor.do_resize = False
             self.image_paths: List[Path] = self.get_file_paths(type="img")
 
         elif self.load_for_model == LoadForModel.ORIGINAL:
@@ -482,6 +491,10 @@ class SHIFTDataset(Dataset):
             image = self._load_image(image_path)
             semseg_path = image_path.replace("img", "semseg").replace(".jpg", ".png")
             semseg_mask = self._load_semseg(semseg_path)
+            if self.image_transforms is not None:
+                image = self.image_transforms(image)
+            if self.frame_transforms is not None:
+                image, semseg_mask = self.frame_transforms(image, semseg_mask)
             processed = self.image_processor(images=image, segmentation_maps=semseg_mask)
             data_dict["pixel_values"] = processed.data["pixel_values"][0]
             data_dict["labels"] = processed.data["labels"][0]
