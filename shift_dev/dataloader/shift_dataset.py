@@ -268,7 +268,7 @@ class SHIFTDataset(Dataset):
     ) -> None:
         """Initialize SHIFT dataset."""
         # Validate input
-        assert split in {"train", "val", "test"}, f"Invalid split '{split}'."
+        assert split in {"train", "val", "minival", "test", "minitest"}, f"Invalid split '{split}'."
         assert framerate in {"images", "videos"}, f"Invalid framerate '{framerate}'. Must be 'images' or 'videos'."
         assert shift_type in {"discrete", "continuous/1x", "continuous/10x", "continuous/100x"}, (
             f"Invalid shift_type '{shift_type}'. Must be one of 'discrete', 'continuous/1x', 'continuous/10x', "
@@ -307,7 +307,7 @@ class SHIFTDataset(Dataset):
         if self.load_for_model == LoadForModel.SEGFORMER:
             import transformers
             self.image_processor = transformers.SegformerImageProcessor() if image_processor is None else image_processor
-            if self.split == "val" and eval_full_res:
+            if self.split.endswith("val") and eval_full_res:
                 self.image_processor.do_resize = False
             self.image_paths: List[Path] = self.get_file_paths(type="img")
 
