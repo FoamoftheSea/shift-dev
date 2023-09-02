@@ -88,7 +88,7 @@ class _SHIFTScalabelLabels(Scalabel):
         self.num_workers = num_workers
 
         # Validate input
-        assert split in set(("train", "val", "test")), f"Invalid split '{split}'"
+        assert split in set(("train", "val", "minival", "test", "minitest")), f"Invalid split '{split}'"
         assert view in _SHIFTScalabelLabels.VIEWS, f"Invalid view '{view}'"
 
         # Set attributes
