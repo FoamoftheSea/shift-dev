@@ -264,7 +264,7 @@ class SHIFTDataset(Dataset):
         image_transforms: Optional[List[v2.Transform]] = None,
         frame_transforms: Optional[List[v2.Transform]] = None,
         image_processor: Optional = None,
-        eval_full_res: bool = False,
+        load_full_res: bool = False,
     ) -> None:
         """Initialize SHIFT dataset."""
         # Validate input
@@ -307,7 +307,7 @@ class SHIFTDataset(Dataset):
         if self.load_for_model == LoadForModel.SEGFORMER:
             import transformers
             self.image_processor = transformers.SegformerImageProcessor() if image_processor is None else image_processor
-            if self.split.endswith("val") and eval_full_res:
+            if load_full_res:
                 self.image_processor.do_resize = False
             self.image_paths: List[Path] = self.get_file_paths(type="img")
 
