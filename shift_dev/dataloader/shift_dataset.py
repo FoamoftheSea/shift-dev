@@ -9,7 +9,7 @@ from functools import partial
 from pathlib import Path
 import multiprocessing
 from io import BytesIO
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 import torch
@@ -21,7 +21,8 @@ from torch import Tensor
 from torch.utils.data import Dataset
 from torchvision.transforms import v2
 
-from shift_dev.types import DataDict, Keys
+from shift_dev.dataloader.image_processors import SegformerMultitaskImageProcessor
+from shift_dev.types import DataDict, Keys, DictStrAny
 from shift_dev.utils import setup_logger
 from shift_dev.utils.backend import DataBackend, HDF5Backend, ZipBackend
 from shift_dev.utils.load import im_decode, ply_decode
@@ -306,7 +307,7 @@ class SHIFTDataset(Dataset):
 
         if self.load_for_model == LoadForModel.SEGFORMER:
             import transformers
-            self.image_processor = transformers.SegformerImageProcessor() if image_processor is None else image_processor
+            self.image_processor = SegformerMultitaskImageProcessor() if image_processor is None else image_processor
             if load_full_res:
                 self.image_processor.do_resize = False
             self.image_paths: List[Path] = self.get_file_paths(type="img")
@@ -489,17 +490,28 @@ class SHIFTDataset(Dataset):
         if self.load_for_model == LoadForModel.SEGFORMER:
             image_path = self.image_paths[idx]
             image = self._load_image(image_path)
-            semseg_path = image_path.replace("img", "semseg").replace(".jpg", ".png")
-            semseg_mask = self._load_semseg(semseg_path)
+            if Keys.segmentation_masks in self.keys_to_load:
+                semseg_path = image_path.replace("img", "semseg").replace(".jpg", ".png")
+                semseg_mask = self._load_semseg(semseg_path)
+            else:
+                semseg_mask = None
+            if Keys.depth_maps in self.keys_to_load:
+                depth_path = image_path.replace("img", "depth").replace(".jpg", ".png")
+                depth_mask = self._load_depth(depth_path)
+            else:
+                depth_mask = None
             if self.image_transforms is not None:
                 image = self.image_transforms(image)
             if self.frame_transforms is not None:
-                image, semseg_mask = self.frame_transforms(image, semseg_mask)
-            processed = self.image_processor(images=image, segmentation_maps=semseg_mask)
+                image, semseg_mask, depth_mask = self.frame_transforms(image, semseg_mask, depth_mask)
+            processed = self.image_processor(images=image, segmentation_maps=semseg_mask, depth_masks=depth_mask)
             data_dict["pixel_values"] = processed.data["pixel_values"][0]
-            data_dict["labels"] = processed.data["labels"][0]
+            if semseg_mask is not None:
+                data_dict["labels"] = processed.data["labels"][0]
+            if depth_mask is not None:
+                data_dict["depth"] = processed.data["depth"][0]
 
-        elif self.load_for_model == ORIGINAL:
+        elif self.load_for_model == LoadForModel.ORIGINAL:
             video_name, frame_name = self._get_frame_key(idx)
             for view in self.views_to_load:
                 data_dict_view = {}
