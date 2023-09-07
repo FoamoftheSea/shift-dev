@@ -509,7 +509,7 @@ class SHIFTDataset(Dataset):
             if semseg_mask is not None:
                 data_dict["labels"] = processed.data["labels"][0]
             if depth_mask is not None:
-                data_dict["depth"] = processed.data["depth"][0]
+                data_dict["depth_labels"] = processed.data["depth_labels"][0]
 
         elif self.load_for_model == LoadForModel.ORIGINAL:
             video_name, frame_name = self._get_frame_key(idx)

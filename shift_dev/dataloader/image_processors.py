@@ -22,15 +22,26 @@ class SegformerMultitaskImageProcessor(SegformerImageProcessor):
         """Preprocesses a single image."""
         # All transformations expect numpy arrays.
         depth = to_numpy_array(depth)
-        if input_data_format is None:
-            input_data_format = infer_channel_dimension_format(depth)
+        if depth.ndim == 2:
+            added_channel_dim = True
+            depth = depth[None, ...]
+            input_data_format = ChannelDimension.FIRST
+        else:
+            added_channel_dim = False
+            if input_data_format is None:
+                input_data_format = infer_channel_dimension_format(depth, num_channels=1)
         depth = self._preprocess(
             image=depth,
             do_reduce_labels=False,
             do_resize=do_resize,
             size=size,
             input_data_format=input_data_format,
+            do_rescale=False,
+            do_normalize=False,
         )
+        # Remove extra channel dimension if added for processing
+        if added_channel_dim:
+            depth = depth.squeeze(0)
         if data_format is not None:
             depth = to_channel_dimension_format(depth, data_format, input_channel_dim=input_data_format)
         return depth
@@ -183,6 +194,6 @@ class SegformerMultitaskImageProcessor(SegformerImageProcessor):
                 )
                 for depth_mask in depth_masks
             ]
-            data["depth"] = depth_masks
+            data["depth_labels"] = depth_masks
 
         return BatchFeature(data=data, tensor_type=return_tensors)
