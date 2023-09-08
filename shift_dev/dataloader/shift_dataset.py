@@ -266,6 +266,8 @@ class SHIFTDataset(Dataset):
         frame_transforms: Optional[List[v2.Transform]] = None,
         image_processor: Optional = None,
         load_full_res: bool = False,
+        depth_mask_semantic_ids: Optional[List[int]] = None,
+        depth_mask_value: float = 0.0,
     ) -> None:
         """Initialize SHIFT dataset."""
         # Validate input
@@ -292,6 +294,8 @@ class SHIFTDataset(Dataset):
         self.image_transforms = image_transforms if image_transforms is None else v2.Compose(image_transforms)
         self.frame_transforms = frame_transforms if frame_transforms is None else v2.Compose(frame_transforms)
         self.load_for_model = load_for_model
+        self.depth_mask_semantic_ids = depth_mask_semantic_ids
+        self.depth_mask_value = depth_mask_value
         self.ext = _get_extension(backend)
         if self.shift_type.startswith("continuous"):
             shift_speed = self.shift_type.split("/")[-1]
@@ -497,18 +501,22 @@ class SHIFTDataset(Dataset):
                 semseg_mask = None
             if Keys.depth_maps in self.keys_to_load:
                 depth_path = image_path.replace("img", "depth").replace(".jpg", ".png")
-                depth_mask = self._load_depth(depth_path)
+                depth = self._load_depth(depth_path)
+                if self.depth_mask_semantic_ids is not None:
+                    if semseg_mask is None:
+                        raise Exception("Cannot mask depth by semantic ID without loading semantic masks.")
+                    depth[np.expand_dims(np.isin(semseg_mask, self.depth_mask_semantic_ids), 0)] = self.depth_mask_value
             else:
-                depth_mask = None
+                depth = None
             if self.image_transforms is not None:
                 image = self.image_transforms(image)
             if self.frame_transforms is not None:
-                image, semseg_mask, depth_mask = self.frame_transforms(image, semseg_mask, depth_mask)
-            processed = self.image_processor(images=image, segmentation_maps=semseg_mask, depth_masks=depth_mask)
+                image, semseg_mask, depth = self.frame_transforms(image, semseg_mask, depth)
+            processed = self.image_processor(images=image, segmentation_maps=semseg_mask, depth_masks=depth)
             data_dict["pixel_values"] = processed.data["pixel_values"][0]
             if semseg_mask is not None:
                 data_dict["labels"] = processed.data["labels"][0]
-            if depth_mask is not None:
+            if depth is not None:
                 data_dict["depth_labels"] = processed.data["depth_labels"][0]
 
         elif self.load_for_model == LoadForModel.ORIGINAL:
