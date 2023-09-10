@@ -1,15 +1,96 @@
+import warnings
 from typing import Dict, Optional, Union, List
 
 import PIL
 import numpy as np
 from torch import TensorType
 from transformers import SegformerImageProcessor, BatchFeature
+from transformers.image_processing_utils import get_size_dict
 from transformers.image_transforms import to_channel_dimension_format
 from transformers.image_utils import ImageInput, ChannelDimension, to_numpy_array, infer_channel_dimension_format, \
     PILImageResampling, make_list_of_images, valid_images
+from transformers.utils import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
 
 class SegformerMultitaskImageProcessor(SegformerImageProcessor):
+
+    def __init__(
+        self,
+        do_resize: bool = True,
+        size: Dict[str, int] = None,
+        resample: PILImageResampling = PILImageResampling.BILINEAR,
+        do_rescale: bool = True,
+        rescale_factor: Union[int, float] = 1 / 255,
+        do_normalize: bool = True,
+        image_mean: Optional[Union[float, List[float]]] = None,
+        image_std: Optional[Union[float, List[float]]] = None,
+        do_reduce_labels: bool = False,
+        class_id_remap: Optional[Dict[int, int]] = None,
+        **kwargs,
+    ) -> None:
+        if "reduce_labels" in kwargs:
+            warnings.warn(
+                "The `reduce_labels` parameter is deprecated and will be removed in a future version. Please use "
+                "`do_reduce_labels` instead.",
+                FutureWarning,
+            )
+            do_reduce_labels = kwargs.pop("reduce_labels")
+
+        super().__init__(**kwargs)
+        size = size if size is not None else {"height": 512, "width": 512}
+        size = get_size_dict(size)
+        self.do_resize = do_resize
+        self.size = size
+        self.resample = resample
+        self.do_rescale = do_rescale
+        self.rescale_factor = rescale_factor
+        self.do_normalize = do_normalize
+        self.image_mean = image_mean if image_mean is not None else IMAGENET_DEFAULT_MEAN
+        self.image_std = image_std if image_std is not None else IMAGENET_DEFAULT_STD
+        self.do_reduce_labels = do_reduce_labels
+        self.class_id_remap = class_id_remap
+
+    def _preprocess_mask(
+        self,
+        segmentation_map: ImageInput,
+        do_reduce_labels: bool = None,
+        do_resize: bool = None,
+        size: Dict[str, int] = None,
+        input_data_format: Optional[Union[str, ChannelDimension]] = None,
+    ) -> np.ndarray:
+        """Preprocesses a single mask."""
+        segmentation_map = to_numpy_array(segmentation_map)
+        # Add channel dimension if missing - needed for certain transformations
+        if segmentation_map.ndim == 2:
+            added_channel_dim = True
+            segmentation_map = segmentation_map[None, ...]
+            input_data_format = ChannelDimension.FIRST
+        else:
+            added_channel_dim = False
+            if input_data_format is None:
+                input_data_format = infer_channel_dimension_format(segmentation_map, num_channels=1)
+        # Remap IDs if remap dict was passed
+        if hasattr(self, "class_id_remap") and self.class_id_remap is not None and len(self.class_id_remap) > 0:
+            mappings = np.zeros(shape=max(self.class_id_remap.keys()) + 1, dtype=np.int64)
+            for class_id in np.unique(segmentation_map):
+                mappings[class_id] = self.class_id_remap.get(class_id, class_id)
+            segmentation_map = mappings[segmentation_map]
+        # reduce zero label if needed
+        segmentation_map = self._preprocess(
+            image=segmentation_map,
+            do_reduce_labels=do_reduce_labels,
+            do_resize=do_resize,
+            resample=PILImageResampling.NEAREST,
+            size=size,
+            do_rescale=False,
+            do_normalize=False,
+            input_data_format=input_data_format,
+        )
+        # Remove extra channel dimension if added for processing
+        if added_channel_dim:
+            segmentation_map = segmentation_map.squeeze(0)
+        segmentation_map = segmentation_map.astype(np.int64)
+        return segmentation_map
 
     def _preprocess_depth(
         self,
