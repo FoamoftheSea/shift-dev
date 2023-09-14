@@ -504,7 +504,11 @@ class SHIFTDataset(Dataset):
                 depth = self._load_depth(depth_path)
                 if self.depth_mask_semantic_ids is not None:
                     if semseg_mask is None:
-                        raise Exception("Cannot mask depth by semantic ID without loading semantic masks.")
+                        try:
+                            semseg_mask = self._load_semseg(image_path.replace("img", "semseg").replace(".jpg", ".png"))
+                        except FileNotFoundError as e:
+                            print("Cannot mask depth if semantic masks are unavailable")
+                            raise e
                     depth[np.expand_dims(np.isin(semseg_mask, self.depth_mask_semantic_ids), 0)] = self.depth_mask_value
             else:
                 depth = None
@@ -514,9 +518,9 @@ class SHIFTDataset(Dataset):
                 image, semseg_mask, depth = self.frame_transforms(image, semseg_mask, depth)
             processed = self.image_processor(images=image, segmentation_maps=semseg_mask, depth_masks=depth)
             data_dict["pixel_values"] = processed.data["pixel_values"][0]
-            if semseg_mask is not None:
+            if semseg_mask is not None and Keys.segmentation_masks in self.keys_to_load:
                 data_dict["labels"] = processed.data["labels"][0]
-            if depth is not None:
+            if depth is not None and Keys.depth_maps in self.keys_to_load:
                 data_dict["depth_labels"] = processed.data["depth_labels"][0]
 
         elif self.load_for_model == LoadForModel.ORIGINAL:
