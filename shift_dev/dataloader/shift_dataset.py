@@ -206,7 +206,6 @@ class SHIFTCameraFrame:
                 self._depth = self.frame.scene.dataset._load_depth(fp)
             return self._depth
         else:
-            print("Depth not loaded.")
             return None
 
     @property
@@ -223,12 +222,11 @@ class SHIFTCameraFrame:
                 self._semseg = self.frame.scene.dataset._load_semseg(fp)
             return self._semseg
         else:
-            print("Semsg not loaded.")
             return None
 
     @property
     def optical_flow(self):
-        print("Not implemented.")
+        print("Optical flow not yet implemented.")
         return None
 
     @property
