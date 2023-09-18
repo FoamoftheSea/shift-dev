@@ -610,7 +610,7 @@ class SHIFTDataset(Dataset):
         data_dict = {}
 
         if self.load_for_model == LoadForModel.SEGFORMER:
-            image_path = self.image_paths[idx]
+            image_path = str(self.image_paths[idx])
             image = self._load_image(image_path)
             if Keys.segmentation_masks in self.keys_to_load:
                 semseg_path = image_path.replace("img", "semseg").replace(".jpg", ".png")
