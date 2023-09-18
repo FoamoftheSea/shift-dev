@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import partial
@@ -168,6 +169,95 @@ class _SHIFTScalabelLabels(Scalabel):
         return ScalabelData(frames=frames, config=config)
 
 
+class SHIFTCameraFrame:
+
+    def __init__(self, frame: SHIFTFrame, camera_name: str):
+        self.frame = frame
+        self.camera_name = camera_name
+        self._image = None
+        self._semseg = None
+        self._depth = None
+
+    @property
+    def image(self):
+        if self._image is None:
+            fp = os.path.join(
+                self.frame.scene.dataset.annotation_base,
+                self.camera_name,
+                "img",
+                self.frame.scene.name,
+                f"{self.frame.frame_id}_img_{self.camera_name}.jpg"
+            )
+            self._image = self.frame.scene.dataset._load_image(filepath=fp)
+
+        return self._image
+
+    @property
+    def depth(self):
+        if Keys.depth_maps in self.frame.scene.dataset.keys_to_load:
+            if self._depth is None:
+                fp = os.path.join(
+                    self.frame.scene.dataset.annotation_base,
+                    self.camera_name,
+                    "depth",
+                    self.frame.scene.name,
+                    f"{self.frame.frame_id}_depth_{self.camera_name}.png"
+                )
+                self._depth = self.frame.scene.dataset._load_depth(fp)
+            return self._depth
+        else:
+            return None
+
+    @property
+    def semantic_mask(self):
+        if Keys.segmentation_masks in self.frame.scene.dataset.keys_to_load:
+            if self._semseg is None:
+                fp = os.path.join(
+                    self.frame.scene.dataset.annotation_base,
+                    self.camera_name,
+                    "semseg",
+                    self.frame.scene.name,
+                    f"{self.frame.frame_id}_semseg_{self.camera_name}.png"
+                )
+                self._semseg = self.frame.scene.dataset._load_semseg(fp)
+            return self._semseg
+        else:
+            return None
+
+    @property
+    def optical_flow(self):
+        print("Optical flow not yet implemented.")
+        return None
+
+    @property
+    def processed_frame(self):
+        return self.frame.scene.dataset.preprocess_frame(self.image, self.semantic_mask, self.depth)
+
+
+class SHIFTFrame:
+
+    def __init__(self, scene: SHIFTScene, frame_id: str):
+        self.scene = scene
+        self.frame_id = frame_id
+
+    def get_camera_frame(self, camera_name: str):
+        return SHIFTCameraFrame(frame=self, camera_name=camera_name)
+
+
+class SHIFTScene:
+
+    def __init__(
+            self,
+            dataset: SHIFTDataset,
+            name: str,
+    ):
+        self.dataset = dataset
+        self.name = name
+
+    def get_frame(self, frame_id):
+        return SHIFTFrame(scene=self, frame_id=frame_id)
+
+
 class SHIFTDataset(Dataset):
     """SHIFT dataset class, supporting multiple tasks and views."""
 
@@ -287,6 +377,7 @@ class SHIFTDataset(Dataset):
         self.split = split
         self.keys_to_load = keys_to_load
         self.views_to_load = views_to_load
+        self.camera_names = [view for view in self.views_to_load if view != "center"]
         self.framerate = framerate
         self.shift_type = shift_type
         self.backend = backend
@@ -308,6 +399,20 @@ class SHIFTDataset(Dataset):
             )
         if self.verbose:
             logger.info(f"Base: {self.annotation_base}. Backend: {self.backend}")
+
+        self.scene_names = [
+            file.stem for file in (Path(self.annotation_base) / self.views_to_load[0]).glob("*/*/")
+            if re.search("img|lidar/*", str(file))
+        ]
+
+        self.frame_ids = [
+            file.stem.split("_")[0]
+            for file in next(
+                fp for fp in (
+                        Path(self.annotation_base) / self.views_to_load[0]
+                ).glob("*/*") if re.search("img|lidar", str(fp))
+            ).glob("*")
+        ]
 
         if self.load_for_model == LoadForModel.SEGFORMER:
             import transformers
@@ -370,14 +475,13 @@ class SHIFTDataset(Dataset):
         """Return paths to all files in split for sampling"""
         assert type in ("img", "semseg"), "File type not supported."
         ext = ".jpg" if type == "img" else ".png"
-        file_paths = []
-        for view in self.views_to_load:
-            key_dir = Path(self.annotation_base) / view / type
-            for scene_folder in key_dir.iterdir():
-                for file_path in scene_folder.glob(f"*{ext}"):
-                    file_paths.append(str(file_path))
+        file_paths = [fp for fp in Path(self.annotation_base).glob(f"*/*/*/*{ext}") if
+                      len(list(re.finditer(f"{'|'.join(self.views_to_load)}", str(fp)))) == 2]
 
         return file_paths
+
+    def get_scene(self, scene_name):
+        return SHIFTScene(dataset=self, name=scene_name)
 
     def validate_keys(self, keys_to_load: Sequence[str]) -> None:
         """Validate that all keys to load are supported."""
@@ -470,6 +574,20 @@ class SHIFTDataset(Dataset):
             return frames[idx].videoName, frames[idx].name
         raise ValueError("No Scalabel file has been loaded.")
 
+    def _do_transforms_2d(self, image, semseg_mask=None, depth=None):
+        if self.image_transforms is not None:
+            image = self.image_transforms(image)
+        if self.frame_transforms is not None:
+            image, semseg_mask, depth = self.frame_transforms(image, semseg_mask, depth)
+
+        return image, semseg_mask, depth
+
+    def preprocess_frame(self, image, semseg_mask=None, depth=None):
+        image, semseg_mask, depth = self._do_transforms_2d(image, semseg_mask, depth)
+        processed = self.image_processor(images=image, segmentation_maps=semseg_mask, depth_masks=depth)
+
+        return processed
+
     def __len__(self) -> int:
         """Get the number of samples in the dataset."""
         if self.load_for_model == LoadForModel.SEGFORMER:
@@ -492,7 +610,7 @@ class SHIFTDataset(Dataset):
         data_dict = {}
 
         if self.load_for_model == LoadForModel.SEGFORMER:
-            image_path = self.image_paths[idx]
+            image_path = str(self.image_paths[idx])
             image = self._load_image(image_path)
             if Keys.segmentation_masks in self.keys_to_load:
                 semseg_path = image_path.replace("img", "semseg").replace(".jpg", ".png")
@@ -512,11 +630,8 @@ class SHIFTDataset(Dataset):
                     depth[np.expand_dims(np.isin(semseg_mask, self.depth_mask_semantic_ids), 0)] = self.depth_mask_value
             else:
                 depth = None
-            if self.image_transforms is not None:
-                image = self.image_transforms(image)
-            if self.frame_transforms is not None:
-                image, semseg_mask, depth = self.frame_transforms(image, semseg_mask, depth)
-            processed = self.image_processor(images=image, segmentation_maps=semseg_mask, depth_masks=depth)
+            processed = self.preprocess_frame(image, semseg_mask, depth)
+
             data_dict["pixel_values"] = processed.data["pixel_values"][0]
             if semseg_mask is not None and Keys.segmentation_masks in self.keys_to_load:
                 data_dict["labels"] = processed.data["labels"][0]
