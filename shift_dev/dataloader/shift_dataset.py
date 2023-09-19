@@ -252,6 +252,7 @@ class SHIFTScene:
             name: str,
     ):
         self.dataset = dataset
+        self.frame_ids = dataset.frame_ids
         self.name = name
 
     def get_frame(self, frame_id):
