@@ -25,7 +25,7 @@ from torchvision.transforms import v2
 from shift_dev.dataloader.image_processors import SegformerMultitaskImageProcessor
 from shift_dev.types import DataDict, Keys, DictStrAny
 from shift_dev.utils import setup_logger
-from shift_dev.utils.backend import DataBackend, HDF5Backend, ZipBackend
+from shift_dev.utils.backend import DataBackend, HDF5Backend, ZipBackend, FileBackend
 from shift_dev.utils.load import im_decode, ply_decode
 
 from .base import Scalabel
@@ -350,7 +350,7 @@ class SHIFTDataset(Dataset):
         load_for_model: LoadForModel = LoadForModel.SEGFORMER,
         framerate: str = "images",
         shift_type: str = "discrete",
-        backend: DataBackend = HDF5Backend(),
+        backend: DataBackend = FileBackend(),
         num_workers: int = 1,
         verbose: bool = False,
         image_transforms: Optional[List[v2.Transform]] = None,
