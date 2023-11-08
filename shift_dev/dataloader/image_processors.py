@@ -1,15 +1,23 @@
 import warnings
-from typing import Dict, Optional, Union, List
+from typing import Dict, Optional, Union, List, Any, Tuple
 
 import PIL
 import numpy as np
-from torch import TensorType
+from copy import deepcopy
+from torch import TensorType, Tensor
 from transformers import SegformerImageProcessor, BatchFeature
 from transformers.image_processing_utils import get_size_dict
-from transformers.image_transforms import to_channel_dimension_format
+from transformers.image_transforms import to_channel_dimension_format, corners_to_center_format, resize
 from transformers.image_utils import ImageInput, ChannelDimension, to_numpy_array, infer_channel_dimension_format, \
     PILImageResampling, make_list_of_images, valid_images
 from transformers.utils import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
+
+
+def normalize_boxes2d(boxes2d: Tensor, image_size: Tuple[int, int]) -> Dict:
+    image_height, image_width = image_size
+    boxes = corners_to_center_format(boxes2d)
+    boxes /= np.asarray([image_width, image_height, image_width, image_height], dtype=np.float32)
+    return boxes
 
 
 class SegformerMultitaskImageProcessor(SegformerImageProcessor):
@@ -17,11 +25,12 @@ class SegformerMultitaskImageProcessor(SegformerImageProcessor):
     def __init__(
         self,
         do_resize: bool = True,
-        size: Dict[str, int] = None,
+        size: Optional[Dict[str, int]] = None,
         resample: PILImageResampling = PILImageResampling.BILINEAR,
         do_rescale: bool = True,
         rescale_factor: Union[int, float] = 1 / 255,
         do_normalize: bool = True,
+        do_normalize_boxes2d: bool = True,
         image_mean: Optional[Union[float, List[float]]] = None,
         image_std: Optional[Union[float, List[float]]] = None,
         do_reduce_labels: bool = False,
@@ -45,10 +54,73 @@ class SegformerMultitaskImageProcessor(SegformerImageProcessor):
         self.do_rescale = do_rescale
         self.rescale_factor = rescale_factor
         self.do_normalize = do_normalize
+        self.do_normalize_boxes2d = do_normalize_boxes2d
         self.image_mean = image_mean if image_mean is not None else IMAGENET_DEFAULT_MEAN
         self.image_std = image_std if image_std is not None else IMAGENET_DEFAULT_STD
         self.do_reduce_labels = do_reduce_labels
         self.class_id_remap = class_id_remap
+
+    def resize_annotation(
+            self,
+            annotation: Dict[str, Any],
+            orig_size: Tuple[int, int],
+            target_size: Tuple[int, int],
+            threshold: float = 0.5,
+            resample: PILImageResampling = PILImageResampling.NEAREST,
+            input_data_format: Optional[Union[str, ChannelDimension]] = None,
+    ):
+        """
+        Resizes an annotation to a target size.
+
+        Args:
+            annotation (`Dict[str, Any]`):
+                The annotation dictionary.
+            orig_size (`Tuple[int, int]`):
+                The original size of the input image.
+            target_size (`Tuple[int, int]`):
+                The target size of the image, as returned by the preprocessing `resize` step.
+            threshold (`float`, *optional*, defaults to 0.5):
+                The threshold used to binarize the segmentation masks.
+            resample (`PILImageResampling`, defaults to `PILImageResampling.NEAREST`):
+                The resampling filter to use when resizing the masks.
+        """
+        ratios = tuple(float(s) / float(s_orig) for s, s_orig in zip(target_size, orig_size))
+        ratio_height, ratio_width = ratios
+        annotation["input_hw"] = target_size
+
+        for key, value in annotation.items():
+            if key == "boxes2d":
+                boxes = value
+                scaled_boxes = boxes * np.asarray([ratio_width, ratio_height, ratio_width, ratio_height],
+                                                  dtype=np.float32)
+                annotation["boxes2d"] = scaled_boxes
+            elif key == "intrinsics":
+                intr_scale = np.array([[ratio_width, 1, ratio_width], [1, ratio_height, ratio_height], [1, 1, 1]])
+                annotation["intrinsics"] = annotation["intrinsics"] * intr_scale
+            elif key == "masks":
+                masks = value[:, None]
+                # masks = to_numpy_array(masks)
+                if len(masks) > 0:
+                    masks = make_list_of_images(masks)
+                    masks = [
+                        self._preprocess_mask(
+                            segmentation_mask=mask,
+                            do_reduce_labels=False,
+                            do_resize=True,
+                            size={"height": target_size[0], "width": target_size[1]},
+                            input_data_format=input_data_format,
+                        )
+                        for mask in masks
+                    ]
+                    masks = [mask.astype(np.float32)[0] > threshold for mask in masks]
+                # masks = np.array([resize(mask, target_size, resample=resample) for mask in masks])
+                # masks = masks.astype(np.float32)
+                # masks = masks[:, 0] > threshold
+                annotation["masks"] = masks
+            else:
+                pass
+
+        return annotation
 
     def _preprocess_mask(
         self,
@@ -57,6 +129,7 @@ class SegformerMultitaskImageProcessor(SegformerImageProcessor):
         do_resize: bool = None,
         size: Dict[str, int] = None,
         input_data_format: Optional[Union[str, ChannelDimension]] = None,
+        is_instance: bool = False,
     ) -> np.ndarray:
         """Preprocesses a single mask."""
         segmentation_map = to_numpy_array(segmentation_map)
@@ -70,7 +143,12 @@ class SegformerMultitaskImageProcessor(SegformerImageProcessor):
             if input_data_format is None:
                 input_data_format = infer_channel_dimension_format(segmentation_map, num_channels=1)
         # Remap IDs if remap dict was passed
-        if hasattr(self, "class_id_remap") and self.class_id_remap is not None and len(self.class_id_remap) > 0:
+        if (
+                hasattr(self, "class_id_remap")
+                and self.class_id_remap is not None
+                and len(self.class_id_remap) > 0
+                and not is_instance
+        ):
             mappings = np.zeros(shape=max(self.class_id_remap.keys()) + 1, dtype=np.int64)
             for class_id in np.unique(segmentation_map):
                 mappings[class_id] = self.class_id_remap.get(class_id, class_id)
@@ -111,6 +189,8 @@ class SegformerMultitaskImageProcessor(SegformerImageProcessor):
             added_channel_dim = False
             if input_data_format is None:
                 input_data_format = infer_channel_dimension_format(depth, num_channels=1)
+        pillow_scale = depth.max()
+        depth /= pillow_scale
         depth = self._preprocess(
             image=depth,
             do_reduce_labels=False,
@@ -120,6 +200,7 @@ class SegformerMultitaskImageProcessor(SegformerImageProcessor):
             do_rescale=False,
             do_normalize=False,
         )
+        depth *= pillow_scale
         # Remove extra channel dimension if added for processing
         if added_channel_dim:
             depth = depth.squeeze(0)
@@ -127,17 +208,30 @@ class SegformerMultitaskImageProcessor(SegformerImageProcessor):
             depth = to_channel_dimension_format(depth, data_format, input_channel_dim=input_data_format)
         return depth
 
+    def _preprocess_boxes2d(
+        self,
+        boxes2d: Tensor,
+        do_normalize: bool = True,
+        image_size: Optional[Tuple[int, int]] = None,
+    ):
+        if do_normalize:
+            boxes2d = normalize_boxes2d(boxes2d=boxes2d, image_size=image_size)
+
+        return boxes2d
+
     def preprocess(
         self,
-        images: ImageInput,
-        segmentation_maps: Optional[ImageInput] = None,
-        depth_masks: Optional[ImageInput] = None,
+        data_view_dict: dict,
+        # images: ImageInput,
+        # segmentation_masks: Optional[ImageInput] = None,
+        # depth_maps: Optional[ImageInput] = None,
         do_resize: Optional[bool] = None,
         size: Optional[Dict[str, int]] = None,
         resample: PILImageResampling = None,
         do_rescale: Optional[bool] = None,
         rescale_factor: Optional[float] = None,
         do_normalize: Optional[bool] = None,
+        do_normalize_boxes2d: Optional[bool] = None,
         image_mean: Optional[Union[float, List[float]]] = None,
         image_std: Optional[Union[float, List[float]]] = None,
         do_reduce_labels: Optional[bool] = None,
@@ -150,12 +244,8 @@ class SegformerMultitaskImageProcessor(SegformerImageProcessor):
         Preprocess an image or batch of images.
 
         Args:
-            images (`ImageInput`):
-                Image to preprocess.
-            segmentation_maps (`ImageInput`, *optional*):
-                Segmentation map to preprocess.
-            depth_masks ('ImageInput', *optional*):
-                Depth masks to preprocess.
+            data_view_dict (`Dict[str, Any]`):
+                Dictionary containing images and annotations produced by SHIFTDataset
             do_resize (`bool`, *optional*, defaults to `self.do_resize`):
                 Whether to resize the image.
             size (`Dict[str, int]`, *optional*, defaults to `self.size`):
@@ -198,6 +288,7 @@ class SegformerMultitaskImageProcessor(SegformerImageProcessor):
         do_resize = do_resize if do_resize is not None else self.do_resize
         do_rescale = do_rescale if do_rescale is not None else self.do_rescale
         do_normalize = do_normalize if do_normalize is not None else self.do_normalize
+        do_normalize_boxes2d = do_normalize_boxes2d if do_normalize_boxes2d is not None else self.do_normalize_boxes2d
         do_reduce_labels = do_reduce_labels if do_reduce_labels is not None else self.do_reduce_labels
         resample = resample if resample is not None else self.resample
         size = size if size is not None else self.size
@@ -205,12 +296,15 @@ class SegformerMultitaskImageProcessor(SegformerImageProcessor):
         image_mean = image_mean if image_mean is not None else self.image_mean
         image_std = image_std if image_std is not None else self.image_std
 
-        images = make_list_of_images(images)
-        if segmentation_maps is not None:
-            segmentation_maps = make_list_of_images(segmentation_maps, expected_ndims=2)
+        data = deepcopy(data_view_dict)
+        images = make_list_of_images(data.pop("images"))
+        segmentation_masks = None
+        if data.get("segmentation_masks", None) is not None:
+            segmentation_masks = make_list_of_images(data.pop("segmentation_masks"), expected_ndims=2)
 
-        if depth_masks is not None:
-            depth_masks = make_list_of_images(depth_masks, expected_ndims=2)
+        depth_maps = None
+        if data.get("depth_maps", None) is not None:
+            depth_maps = make_list_of_images(data.pop("depth_maps"), expected_ndims=2)
 
         if not valid_images(images):
             raise ValueError(
@@ -218,7 +312,7 @@ class SegformerMultitaskImageProcessor(SegformerImageProcessor):
                 "torch.Tensor, tf.Tensor or jax.ndarray."
             )
 
-        if segmentation_maps is not None and not valid_images(segmentation_maps):
+        if segmentation_masks is not None and not valid_images(segmentation_masks):
             raise ValueError(
                 "Invalid segmentation map type. Must be of type PIL.Image.Image, numpy.ndarray, "
                 "torch.Tensor, tf.Tensor or jax.ndarray."
@@ -250,31 +344,48 @@ class SegformerMultitaskImageProcessor(SegformerImageProcessor):
             for img in images
         ]
 
-        data = {"pixel_values": images}
+        output = {"pixel_values": images}
 
-        if segmentation_maps is not None:
-            segmentation_maps = [
+        if segmentation_masks is not None:
+            segmentation_masks = [
                 self._preprocess_mask(
-                    segmentation_map=segmentation_map,
+                    segmentation_mask=segmentation_mask,
                     do_reduce_labels=do_reduce_labels,
                     do_resize=do_resize,
                     size=size,
                     input_data_format=input_data_format,
                 )
-                for segmentation_map in segmentation_maps
+                for segmentation_mask in segmentation_masks
             ]
-            data["labels"] = segmentation_maps
+            output["segmentation_masks"] = segmentation_masks
 
-        if depth_masks is not None:
-            depth_masks = [
+        if depth_maps is not None:
+            depth_maps = [
                 self._preprocess_depth(
                     depth=depth_mask,
                     do_resize=do_resize,
                     size=size,
                     input_data_format=input_data_format,
                 )
-                for depth_mask in depth_masks
+                for depth_mask in depth_maps
             ]
-            data["depth_labels"] = depth_masks
+            output["depth_maps"] = depth_maps
 
-        return BatchFeature(data=data, tensor_type=return_tensors)
+        if do_resize:
+            data = self.resize_annotation(
+                annotation=data,
+                orig_size=data["original_hw"],
+                target_size=(size["height"], size["width"]),
+                input_data_format=input_data_format,
+            )
+
+        if data.get("boxes2d", None) is not None:
+            data["boxes2d"] = self._preprocess_boxes2d(
+                boxes2d=data.pop("boxes2d"),
+                do_normalize=do_normalize_boxes2d,
+                image_size=data["input_hw"]
+            )
+
+        output.update(data)
+
+        return BatchFeature(data=output, tensor_type=return_tensors)

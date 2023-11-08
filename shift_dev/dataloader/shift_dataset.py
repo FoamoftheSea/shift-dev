@@ -347,7 +347,7 @@ class SHIFTDataset(Dataset):
         split: str,
         keys_to_load: Sequence[str] = (Keys.images, Keys.boxes2d),
         views_to_load: Sequence[str] = ("front",),
-        load_for_model: LoadForModel = LoadForModel.SEGFORMER,
+        load_for_model: LoadForModel = LoadForModel.ORIGINAL,
         framerate: str = "images",
         shift_type: str = "discrete",
         backend: DataBackend = FileBackend(),
@@ -415,11 +415,11 @@ class SHIFTDataset(Dataset):
             ).glob("*")
         ]
 
+        self.image_processor = SegformerMultitaskImageProcessor() if image_processor is None else image_processor
+        if load_full_res:
+            self.image_processor.do_resize = False
+
         if self.load_for_model == LoadForModel.SEGFORMER:
-            import transformers
-            self.image_processor = SegformerMultitaskImageProcessor() if image_processor is None else image_processor
-            if load_full_res:
-                self.image_processor.do_resize = False
             self.image_paths: List[Path] = self.get_file_paths(type="img")
 
         elif self.load_for_model == LoadForModel.ORIGINAL:
@@ -575,17 +575,17 @@ class SHIFTDataset(Dataset):
             return frames[idx].videoName, frames[idx].name
         raise ValueError("No Scalabel file has been loaded.")
 
-    def _do_transforms_2d(self, image, semseg_mask=None, depth=None):
+    def _do_transforms_2d(self, frame):
         if self.image_transforms is not None:
-            image = self.image_transforms(image)
+            frame["pixel_values"] = self.image_transforms(frame.pop("pixel_values"))
         if self.frame_transforms is not None:
-            image, semseg_mask, depth = self.frame_transforms(image, semseg_mask, depth)
+            frame = self.frame_transforms(frame)
 
-        return image, semseg_mask, depth
+        return frame
 
-    def preprocess_frame(self, image, semseg_mask=None, depth=None):
-        image, semseg_mask, depth = self._do_transforms_2d(image, semseg_mask, depth)
-        processed = self.image_processor(images=image, segmentation_maps=semseg_mask, depth_masks=depth)
+    def preprocess_frame(self, frame):
+        frame = self._do_transforms_2d(frame)
+        processed = self.image_processor(frame)
 
         return processed
 
@@ -635,12 +635,13 @@ class SHIFTDataset(Dataset):
 
             data_dict["pixel_values"] = processed.data["pixel_values"][0]
             if semseg_mask is not None and Keys.segmentation_masks in self.keys_to_load:
-                data_dict["labels"] = processed.data["labels"][0]
+                data_dict["labels_semantic"] = processed.data["segmentation_masks"][0]
             if depth is not None and Keys.depth_maps in self.keys_to_load:
-                data_dict["depth_labels"] = processed.data["depth_labels"][0]
+                data_dict["labels_depth"] = processed.data["depth_maps"][0]
 
         elif self.load_for_model == LoadForModel.ORIGINAL:
             video_name, frame_name = self._get_frame_key(idx)
+            assert len(self.views_to_load) == 1, "Loading multiple views not supported."
             for view in self.views_to_load:
                 data_dict_view = {}
                 if view == "center":
@@ -668,9 +669,20 @@ class SHIFTDataset(Dataset):
                             view, "flow", "npz", video_name, frame_name
                         )
 
-                data_dict[view] = data_dict_view
+                processed = self.image_processor(data_dict_view)
+                data_dict[view] = {}
+                data_dict[view]["pixel_values"] = processed.data["pixel_values"][0]
+                if processed.data.get("segmentation_masks", None) is not None:
+                    data_dict[view]["labels_semantic"] = processed.data["segmentation_masks"][0]
+                if processed.data.get("depth_maps", None) is not None:
+                    data_dict[view]["labels_depth"] = processed.data["depth_maps"][0]
+                if processed.data.get("boxes2d", None) is not None:
+                    data_dict[view]["labels"] = {
+                        "boxes": processed.data["boxes2d"].type(torch.FloatTensor),
+                        "class_labels": processed.data["boxes2d_classes"].type(torch.LongTensor),
+                    }
 
-        return data_dict
+        return data_dict[self.views_to_load[0]]
 
     @property
     def video_to_indices(self) -> dict[str, list[int]]:
