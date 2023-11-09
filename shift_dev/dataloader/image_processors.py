@@ -124,7 +124,7 @@ class SegformerMultitaskImageProcessor(SegformerImageProcessor):
 
     def _preprocess_mask(
         self,
-        segmentation_map: ImageInput,
+        segmentation_mask: ImageInput,
         do_reduce_labels: bool = None,
         do_resize: bool = None,
         size: Dict[str, int] = None,
@@ -132,16 +132,16 @@ class SegformerMultitaskImageProcessor(SegformerImageProcessor):
         is_instance: bool = False,
     ) -> np.ndarray:
         """Preprocesses a single mask."""
-        segmentation_map = to_numpy_array(segmentation_map)
+        segmentation_mask = to_numpy_array(segmentation_mask)
         # Add channel dimension if missing - needed for certain transformations
-        if segmentation_map.ndim == 2:
+        if segmentation_mask.ndim == 2:
             added_channel_dim = True
-            segmentation_map = segmentation_map[None, ...]
+            segmentation_mask = segmentation_mask[None, ...]
             input_data_format = ChannelDimension.FIRST
         else:
             added_channel_dim = False
             if input_data_format is None:
-                input_data_format = infer_channel_dimension_format(segmentation_map, num_channels=1)
+                input_data_format = infer_channel_dimension_format(segmentation_mask, num_channels=1)
         # Remap IDs if remap dict was passed
         if (
                 hasattr(self, "class_id_remap")
@@ -150,12 +150,12 @@ class SegformerMultitaskImageProcessor(SegformerImageProcessor):
                 and not is_instance
         ):
             mappings = np.zeros(shape=max(self.class_id_remap.keys()) + 1, dtype=np.int64)
-            for class_id in np.unique(segmentation_map):
+            for class_id in np.unique(segmentation_mask):
                 mappings[class_id] = self.class_id_remap.get(class_id, class_id)
-            segmentation_map = mappings[segmentation_map]
+            segmentation_mask = mappings[segmentation_mask]
         # reduce zero label if needed
-        segmentation_map = self._preprocess(
-            image=segmentation_map,
+        segmentation_mask = self._preprocess(
+            image=segmentation_mask,
             do_reduce_labels=do_reduce_labels,
             do_resize=do_resize,
             resample=PILImageResampling.NEAREST,
@@ -166,9 +166,9 @@ class SegformerMultitaskImageProcessor(SegformerImageProcessor):
         )
         # Remove extra channel dimension if added for processing
         if added_channel_dim:
-            segmentation_map = segmentation_map.squeeze(0)
-        segmentation_map = segmentation_map.astype(np.int64)
-        return segmentation_map
+            segmentation_mask = segmentation_mask.squeeze(0)
+        segmentation_mask = segmentation_mask.astype(np.int64)
+        return segmentation_mask
 
     def _preprocess_depth(
         self,
