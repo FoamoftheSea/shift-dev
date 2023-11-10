@@ -687,7 +687,7 @@ class SHIFTDataset(Dataset):
                     }
 
             # To Do: Fix this so it supports more than one view with collate fn
-            data_dict = data_dict[self.views_to_load[0]]
+            data_dict = dict(data_dict[self.views_to_load[0]])
 
         return data_dict
 
