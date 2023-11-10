@@ -20,7 +20,7 @@ def normalize_boxes2d(boxes2d: Tensor, image_size: Tuple[int, int]) -> Dict:
     return boxes
 
 
-class SegformerMultitaskImageProcessor(SegformerImageProcessor):
+class MultitaskImageProcessor(SegformerImageProcessor):
 
     def __init__(
         self,

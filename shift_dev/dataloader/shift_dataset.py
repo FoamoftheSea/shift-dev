@@ -22,7 +22,7 @@ from torch import Tensor
 from torch.utils.data import Dataset
 from torchvision.transforms import v2
 
-from shift_dev.dataloader.image_processors import SegformerMultitaskImageProcessor
+from shift_dev.dataloader.image_processors import MultitaskImageProcessor
 from shift_dev.types import DataDict, Keys, DictStrAny
 from shift_dev.utils import setup_logger
 from shift_dev.utils.backend import DataBackend, HDF5Backend, ZipBackend, FileBackend
@@ -415,7 +415,7 @@ class SHIFTDataset(Dataset):
             ).glob("*")
         ]
 
-        self.image_processor = SegformerMultitaskImageProcessor() if image_processor is None else image_processor
+        self.image_processor = MultitaskImageProcessor() if image_processor is None else image_processor
         if load_full_res:
             self.image_processor.do_resize = False
 
