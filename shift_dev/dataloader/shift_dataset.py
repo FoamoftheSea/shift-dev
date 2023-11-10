@@ -35,7 +35,7 @@ logger = setup_logger()
 
 @dataclass
 class LoadForModel:
-    SEGFORMER = "segformer"
+    MULTITASK_SEGFORMER = "multitask_segformer"
     ORIGINAL = "original"
 
 
@@ -370,7 +370,7 @@ class SHIFTDataset(Dataset):
         )
         self.validate_keys(keys_to_load)
 
-        if "center" in keys_to_load and load_for_model == LoadForModel.SEGFORMER:
+        if "center" in keys_to_load and load_for_model == LoadForModel.MULTITASK_SEGFORMER:
             raise ValueError("'center' view (lidar) is not supported for Segformer training.")
 
         # Set attributes
@@ -419,7 +419,7 @@ class SHIFTDataset(Dataset):
         if load_full_res:
             self.image_processor.do_resize = False
 
-        if self.load_for_model == LoadForModel.SEGFORMER:
+        if self.load_for_model == LoadForModel.MULTITASK_SEGFORMER:
             self.image_paths: List[Path] = self.get_file_paths(type="img")
 
         elif self.load_for_model == LoadForModel.ORIGINAL:
@@ -591,7 +591,7 @@ class SHIFTDataset(Dataset):
 
     def __len__(self) -> int:
         """Get the number of samples in the dataset."""
-        if self.load_for_model == LoadForModel.SEGFORMER:
+        if self.load_for_model == LoadForModel.MULTITASK_SEGFORMER:
             return len(self.image_paths)
         elif self.load_for_model == LoadForModel.ORIGINAL:
             if len(self.scalabel_datasets) > 0:
@@ -610,7 +610,7 @@ class SHIFTDataset(Dataset):
         # load camera frames
         data_dict = {}
 
-        if self.load_for_model == LoadForModel.SEGFORMER:
+        if self.load_for_model == LoadForModel.MULTITASK_SEGFORMER:
             image_path = str(self.image_paths[idx])
             image = self._load_image(image_path)
             if Keys.segmentation_masks in self.keys_to_load:
