@@ -577,15 +577,17 @@ class SHIFTDataset(Dataset):
 
     def _do_transforms_2d(self, frame):
         if self.image_transforms is not None:
-            frame["pixel_values"] = self.image_transforms(frame.pop("pixel_values"))
+            frame["images"] = self.image_transforms(frame.pop("images"))
         if self.frame_transforms is not None:
             frame = self.frame_transforms(frame)
 
         return frame
 
     def preprocess_frame(self, frame):
+        # Scale images between 0 and 1
+        frame["images"] = frame.pop("images") / 255
         frame = self._do_transforms_2d(frame)
-        processed = self.image_processor(frame)
+        processed = self.image_processor(frame, do_rescale=False)
 
         return processed
 
@@ -613,11 +615,13 @@ class SHIFTDataset(Dataset):
         if self.load_for_model == LoadForModel.MULTITASK_SEGFORMER:
             image_path = str(self.image_paths[idx])
             image = self._load_image(image_path)
+            data_dict_view = {"images": torch.Tensor(image).unsqueeze(0).permute(0, 3, 1, 2)}
             if Keys.segmentation_masks in self.keys_to_load:
                 semseg_path = image_path.replace("img", "semseg").replace(".jpg", ".png")
                 semseg_mask = self._load_semseg(semseg_path)
             else:
                 semseg_mask = None
+            data_dict_view[Keys.segmentation_masks] = semseg_mask
             if Keys.depth_maps in self.keys_to_load:
                 depth_path = image_path.replace("img", "depth").replace(".jpg", ".png")
                 depth = self._load_depth(depth_path)
@@ -631,12 +635,12 @@ class SHIFTDataset(Dataset):
                     depth[np.expand_dims(np.isin(semseg_mask, self.depth_mask_semantic_ids), 0)] = self.depth_mask_value
             else:
                 depth = None
-            processed = self.preprocess_frame(image, semseg_mask, depth)
-
+            data_dict_view[Keys.depth_maps] = depth
+            processed = self.preprocess_frame(data_dict_view)
             data_dict["pixel_values"] = processed.data["pixel_values"][0]
-            if semseg_mask is not None and Keys.segmentation_masks in self.keys_to_load:
+            if processed.data.get("segmentation_masks", None) is not None:
                 data_dict["labels_semantic"] = processed.data["segmentation_masks"][0]
-            if depth is not None and Keys.depth_maps in self.keys_to_load:
+            if processed.data.get("depth_maps", None) is not None:
                 data_dict["labels_depth"] = processed.data["depth_maps"][0]
 
         elif self.load_for_model == LoadForModel.ORIGINAL:
@@ -669,7 +673,7 @@ class SHIFTDataset(Dataset):
                             view, "flow", "npz", video_name, frame_name
                         )
 
-                processed = self.image_processor(data_dict_view)
+                processed = self.preprocess_frame(data_dict_view)
                 data_dict[view] = {}
                 data_dict[view]["pixel_values"] = processed.data["pixel_values"][0]
                 if processed.data.get("segmentation_masks", None) is not None:
@@ -682,7 +686,10 @@ class SHIFTDataset(Dataset):
                         "class_labels": processed.data["boxes2d_classes"].type(torch.LongTensor),
                     }
 
-        return data_dict[self.views_to_load[0]]
+            # To Do: Fix this so it supports more than one view with collate fn
+            data_dict = data_dict[self.views_to_load[0]]
+
+        return data_dict
 
     @property
     def video_to_indices(self) -> dict[str, list[int]]:
