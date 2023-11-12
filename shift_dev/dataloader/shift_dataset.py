@@ -685,6 +685,11 @@ class SHIFTDataset(Dataset):
                         "boxes": processed.data["boxes2d"].type(torch.FloatTensor),
                         "class_labels": processed.data["boxes2d_classes"].type(torch.LongTensor),
                     }
+                if processed.data.get("masks", None) is not None:
+                    if data_dict[view].get("labels", None) is None:
+                        data_dict[view]["labels"] = {}
+                    data_dict[view]["labels"]["masks"] = processed.data["masks"]
+                    data_dict[view]["labels"]["areas"] = processed.data["areas"]
 
             # To Do: Fix this so it supports more than one view with collate fn
             data_dict = dict(data_dict[self.views_to_load[0]])

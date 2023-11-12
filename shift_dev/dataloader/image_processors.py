@@ -245,7 +245,7 @@ class MultitaskImageProcessor(SegformerImageProcessor):
 
         Args:
             data_view_dict (`Dict[str, Any]`):
-                Dictionary containing images and annotations produced by SHIFTDataset
+                Dictionary containing at least "images" and possible keys: ("depth_maps", "segmentation_masks",
             do_resize (`bool`, *optional*, defaults to `self.do_resize`):
                 Whether to resize the image.
             size (`Dict[str, int]`, *optional*, defaults to `self.size`):
@@ -378,6 +378,9 @@ class MultitaskImageProcessor(SegformerImageProcessor):
                 target_size=(size["height"], size["width"]),
                 input_data_format=input_data_format,
             )
+
+        if data.get("masks", None) is not None:
+            data["areas"] = data["masks"].flatten(1, 2).sum(1)
 
         if data.get("boxes2d", None) is not None:
             data["boxes2d"] = self._preprocess_boxes2d(
