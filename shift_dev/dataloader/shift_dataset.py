@@ -665,9 +665,25 @@ class SHIFTDataset(Dataset):
                             view, "semseg", "png", video_name, frame_name
                         )
                     if Keys.depth_maps in self.keys_to_load:
-                        data_dict_view[Keys.depth_maps] = self._load(
-                            view, "depth", "png", video_name, frame_name
-                        )
+                        depth_map = self._load(view, "depth", "png", video_name, frame_name)
+
+                        if self.depth_mask_semantic_ids is not None:
+                            semseg_mask = data_dict_view.get(Keys.segmentation_masks, None)
+                            if semseg_mask is None:
+                                try:
+                                    semseg_mask = self._load(
+                                        view, "semseg", "png", video_name, frame_name
+                                    )
+                                except FileNotFoundError as e:
+                                    print("Cannot mask depth if semantic masks are unavailable")
+                                    raise e
+
+                            depth_map[
+                                np.expand_dims(np.isin(semseg_mask, self.depth_mask_semantic_ids), 0)
+                            ] = self.depth_mask_value
+
+                        data_dict_view[Keys.depth_maps] = depth_map
+
                     if Keys.optical_flows in self.keys_to_load:
                         data_dict_view[Keys.optical_flows] = self._load(
                             view, "flow", "npz", video_name, frame_name
