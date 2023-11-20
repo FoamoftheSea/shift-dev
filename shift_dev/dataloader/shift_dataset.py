@@ -401,19 +401,19 @@ class SHIFTDataset(Dataset):
         if self.verbose:
             logger.info(f"Base: {self.annotation_base}. Backend: {self.backend}")
 
-        self.scene_names = [
-            file.stem for file in (Path(self.annotation_base) / self.views_to_load[0]).glob("*/*/")
-            if re.search("img|lidar/*", str(file))
-        ]
+        # self.scene_names = [
+        #     file.stem for file in (Path(self.annotation_base) / self.views_to_load[0]).glob("*/*/")
+        #     if re.search("img|lidar/*", str(file))
+        # ]
 
-        self.frame_ids = [
-            file.stem.split("_")[0]
-            for file in next(
-                fp for fp in (
-                        Path(self.annotation_base) / self.views_to_load[0]
-                ).glob("*/*") if re.search("img|lidar", str(fp))
-            ).glob("*")
-        ]
+        # self.frame_ids = [
+        #     file.stem.split("_")[0]
+        #     for file in next(
+        #         fp for fp in (
+        #                 Path(self.annotation_base) / self.views_to_load[0]
+        #         ).glob("*/*") if re.search("img|lidar", str(fp))
+        #     ).glob("*")
+        # ]
 
         self.image_processor = MultitaskImageProcessor() if image_processor is None else image_processor
         if load_full_res:
