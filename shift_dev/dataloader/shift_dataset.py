@@ -706,6 +706,8 @@ class SHIFTDataset(Dataset):
                         data_dict[view]["labels"] = {}
                     data_dict[view]["labels"]["masks"] = processed.data["masks"]
                     data_dict[view]["labels"]["areas"] = processed.data["areas"]
+                if processed.data.get("intrinsics", None) is not None:
+                    data_dict[view]["labels"]["intrinsics"] = processed.data["intrinsics"]
 
             # To Do: Fix this so it supports more than one view with collate fn
             data_dict = dict(data_dict[self.views_to_load[0]])
