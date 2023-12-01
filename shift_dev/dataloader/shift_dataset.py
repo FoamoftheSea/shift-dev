@@ -701,6 +701,14 @@ class SHIFTDataset(Dataset):
                         "boxes": processed.data["boxes2d"].type(torch.FloatTensor),
                         "class_labels": processed.data["boxes2d_classes"].type(torch.LongTensor),
                     }
+                if processed.data.get("boxes3d", None) is not None:
+                    data_dict[view]["labels_3d"] = {
+                        "boxes3d": processed.data["boxes3d"].type(torch.FloatTensor),
+                        "class_labels": processed.data["boxes3d_classes"].type(torch.LongTensor),
+                        "heading_class_labels": processed.data["boxes3d_heading_classes"].type(torch.LongTensor),
+                        "heading_residual_labels": processed.data["boxes3d_heading_residuals"],
+                        "size_residual_labels": processed.data["boxes3d_size_residuals"],
+                    }
                 if processed.data.get("masks", None) is not None:
                     if data_dict[view].get("labels", None) is None:
                         data_dict[view]["labels"] = {}

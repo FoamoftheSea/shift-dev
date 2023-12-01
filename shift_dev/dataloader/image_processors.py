@@ -4,7 +4,7 @@ from typing import Dict, Optional, Union, List, Any, Tuple
 import PIL
 import numpy as np
 from copy import deepcopy
-from torch import TensorType, Tensor
+from torch import TensorType, Tensor, LongTensor
 from transformers import SegformerImageProcessor, BatchFeature
 from transformers.image_processing_utils import get_size_dict
 from transformers.image_transforms import to_channel_dimension_format, corners_to_center_format, resize
@@ -12,6 +12,7 @@ from transformers.image_utils import ImageInput, ChannelDimension, to_numpy_arra
     PILImageResampling, make_list_of_images, valid_images
 from transformers.utils import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
+from shift_lab.ontologies.det_3d.utils import SHIFT_BOX3D_SIZE_MEANS, label2id
 
 def normalize_boxes2d(boxes2d: Tensor, image_size: Tuple[int, int]) -> Dict:
     image_height, image_width = image_size
@@ -35,6 +36,9 @@ class MultitaskImageProcessor(SegformerImageProcessor):
         image_std: Optional[Union[float, List[float]]] = None,
         do_reduce_labels: bool = False,
         class_id_remap: Optional[Dict[int, int]] = None,
+        num_heading_bins: Optional[int] = 12,
+        det3d_label2id: Optional[Dict[str, int]] = None,
+        det3d_type_mean_sizes: Optional[Dict[str, List[float]]] = None,
         **kwargs,
     ) -> None:
         if "reduce_labels" in kwargs:
@@ -59,6 +63,44 @@ class MultitaskImageProcessor(SegformerImageProcessor):
         self.image_std = image_std if image_std is not None else IMAGENET_DEFAULT_STD
         self.do_reduce_labels = do_reduce_labels
         self.class_id_remap = class_id_remap
+        self.num_heading_bins = num_heading_bins
+        self.det3d_type_mean_sizes = det3d_type_mean_sizes if det3d_type_mean_sizes is not None else SHIFT_BOX3D_SIZE_MEANS
+        self.det3d_label2id = det3d_label2id if det3d_label2id is not None else label2id
+
+        if self.det3d_type_mean_sizes is not None and self.det3d_label2id is not None:
+            assert len(self.det3d_type_mean_sizes) == len(self.det3d_label2id)
+            self.det3d_mean_size_lookup = self._create_mean_size_lookup()
+
+    def _create_mean_size_lookup(self):
+        lookup = np.zeros(shape=(max(self.det3d_label2id.values()) + 1, 3))
+        for type, mean_size in self.det3d_type_mean_sizes.items():
+            lookup[label2id[type], :] = mean_size
+        return lookup
+
+    def size2class(self, size, type_name):
+        ''' Convert 3D bounding box size to template class and residuals '''
+        size_class = self.det3d_label2id[type_name]
+        size_residual = size - self.det3d_type_mean_sizes[type_name]
+        return size_class, size_residual
+
+    def angle2class(self, angle):
+        """ Convert continuous angle to discrete class and residual. """
+        angle = angle % (2 * np.pi)
+        assert np.bitwise_and(angle >= 0, angle <= 2 * np.pi).sum() == len(angle)
+        angle_per_class = 2 * np.pi / float(self.num_heading_bins)
+        shifted_angle = (angle + angle_per_class / 2) % (2 * np.pi)
+        class_id = (shifted_angle / angle_per_class).type(LongTensor)
+        residual_angle = shifted_angle - (class_id * angle_per_class + angle_per_class / 2)
+        return class_id, residual_angle
+
+    def class2angle(self, cls, residual, to_label_format=True):
+        """ Inverse function to angle2class. """
+        angle_per_class = 2 * np.pi / float(self.num_heading_bins)
+        angle_center = cls * angle_per_class
+        angle = angle_center + residual
+        if to_label_format and angle > np.pi:
+            angle[angle > np.pi] -= 2 * np.pi
+        return angle
 
     def resize_annotation(
             self,
@@ -218,6 +260,19 @@ class MultitaskImageProcessor(SegformerImageProcessor):
             boxes2d = normalize_boxes2d(boxes2d=boxes2d, image_size=image_size)
 
         return boxes2d
+
+    def _preprocess_boxes3d(
+            self,
+            boxes3d: Tensor,
+            boxes3d_classes: Tensor,
+    ):
+        center = boxes3d[:, :3]
+        heading = boxes3d[:, -2]
+        heading_class, heading_residual = self.angle2class(heading)
+        size = boxes3d[:, 3:6]
+        size_residuals = size - self.det3d_mean_size_lookup[boxes3d_classes]
+
+        return center, heading_class, heading_residual, size_residuals
 
     def preprocess(
         self,
@@ -388,6 +443,15 @@ class MultitaskImageProcessor(SegformerImageProcessor):
                 do_normalize=do_normalize_boxes2d,
                 image_size=data["input_hw"]
             )
+
+        if data.get("boxes3d", None) is not None:
+            center, heading_classes, heading_residuals, size_residuals = self._preprocess_boxes3d(
+                boxes3d=data["boxes3d"],
+                boxes3d_classes=data["boxes3d_classes"],
+            )
+            data["boxes3d_heading_classes"] = heading_classes
+            data["boxes3d_heading_residuals"] = heading_residuals
+            data["boxes3d_size_residuals"] = size_residuals
 
         output.update(data)
 
