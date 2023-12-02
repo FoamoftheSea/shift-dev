@@ -250,10 +250,12 @@ class SHIFTScene:
             self,
             dataset: SHIFTDataset,
             name: str,
+            view: str,
     ):
         self.dataset = dataset
-        self.frame_ids = dataset.frame_ids
+        self.frame_ids = dataset.scalabel_datasets[f"{view}/det2d"]
         self.name = name
+        self.view = view
 
     def get_frame(self, frame_id):
         return SHIFTFrame(scene=self, frame_id=frame_id)
