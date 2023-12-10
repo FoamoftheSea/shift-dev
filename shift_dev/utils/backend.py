@@ -267,7 +267,7 @@ class ZipBackend(DataBackend):
         Returns:
             tuple[str, list[str]]: The .zip path and the keys to retrieve.
         """
-        filepath_as_list = filepath.split("/")
+        filepath_as_list = filepath.replace("\\", "/").split("/")
         keys = []
 
         while filepath != ".zip" and not os.path.exists(filepath):

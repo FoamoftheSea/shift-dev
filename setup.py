@@ -32,7 +32,7 @@ setuptools.setup(
         "numpy",
         "pillow",
         "pycocotools",
-        "scalabel @ git+https://github.com/scalabel/scalabel.git",
+        "scalabel @ git+https://github.com/FoamoftheSea/scalabel.git@default-optional-attributes",
         "scikit-image",
         "pyyaml",
         "tqdm",
