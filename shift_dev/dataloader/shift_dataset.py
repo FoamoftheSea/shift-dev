@@ -90,7 +90,7 @@ class _SHIFTScalabelLabels(Scalabel):
         self.num_workers = num_workers
 
         # Validate input
-        assert split in set(("train", "val", "minival", "test", "minitest")), f"Invalid split '{split}'"
+        assert split in {"train", "val", "minival", "test", "minitest"}, f"Invalid split '{split}'"
         assert view in _SHIFTScalabelLabels.VIEWS, f"Invalid view '{view}'"
 
         # Set attributes
@@ -231,7 +231,12 @@ class SHIFTCameraFrame:
 
     @property
     def processed_frame(self):
-        return self.frame.scene.dataset.preprocess_frame(self.image, self.semantic_mask, self.depth)
+        data_dict = {Keys.images: self.image}
+        if self.semantic_mask is not None:
+            data_dict[Keys.segmentation_masks] = self.semantic_mask
+        if self.depth is not None:
+            data_dict[Keys.depth_maps] = self.depth
+        return self.frame.scene.dataset.preprocess_frame(data_dict)
 
 
 class SHIFTFrame:
@@ -403,19 +408,20 @@ class SHIFTDataset(Dataset):
         if self.verbose:
             logger.info(f"Base: {self.annotation_base}. Backend: {self.backend}")
 
-        # self.scene_names = [
-        #     file.stem for file in (Path(self.annotation_base) / self.views_to_load[0]).glob("*/*/")
-        #     if re.search("img|lidar/*", str(file))
-        # ]
+        if self.load_for_model == LoadForModel.MULTITASK_SEGFORMER:
+            self.scene_names = [
+                file.stem for file in (Path(self.annotation_base) / self.views_to_load[0]).glob("*/*/")
+                if re.search("img|lidar/*", str(file))
+            ]
 
-        # self.frame_ids = [
-        #     file.stem.split("_")[0]
-        #     for file in next(
-        #         fp for fp in (
-        #                 Path(self.annotation_base) / self.views_to_load[0]
-        #         ).glob("*/*") if re.search("img|lidar", str(fp))
-        #     ).glob("*")
-        # ]
+            self.frame_ids = [
+                file.stem.split("_")[0]
+                for file in next(
+                    fp for fp in (
+                            Path(self.annotation_base) / self.views_to_load[0]
+                    ).glob("*/*") if re.search("img|lidar", str(fp))
+                ).glob("*")
+            ]
 
         self.image_processor = MultitaskImageProcessor() if image_processor is None else image_processor
         if load_full_res:
@@ -474,7 +480,7 @@ class SHIFTDataset(Dataset):
                             verbose=verbose,
                         )
 
-    def get_file_paths(self, type: str) -> List[str]:
+    def get_file_paths(self, type: str) -> List[Path]:
         """Return paths to all files in split for sampling"""
         assert type in ("img", "semseg"), "File type not supported."
         ext = ".jpg" if type == "img" else ".png"
@@ -484,7 +490,7 @@ class SHIFTDataset(Dataset):
         return file_paths
 
     def get_scene(self, scene_name):
-        return SHIFTScene(dataset=self, name=scene_name)
+        return SHIFTScene(dataset=self, name=scene_name, view=self.views_to_load[0])
 
     def validate_keys(self, keys_to_load: Sequence[str]) -> None:
         """Validate that all keys to load are supported."""
@@ -522,7 +528,7 @@ class SHIFTDataset(Dataset):
             return self._load_flow(filepath)
         raise ValueError(f"Invalid data group '{data_group}'")
 
-    def _load_image(self, filepath: str) -> Tensor:
+    def _load_image(self, filepath: str) -> np.ndarray:
         """Load semantic segmentation data."""
         im_bytes = self.backend.get(filepath)
         image = im_decode(im_bytes, mode="RGB")
